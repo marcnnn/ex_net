@@ -101,7 +101,77 @@ and Verilator, slices/concat/`cat` cover the CRC and ROM needs. Nothing here blo
     (`test/support/axis_source.ex`), comma aligner, header capture buffer with a fixed delay
     line and result ring (`ExNet.RTL.Classifier`), ones' complement checksum tree over a
     masked word window, byte-lane shifters by runtime offset.
-20. **defpacket for the classifier.** The RX classifier was written by hand (see items 1
-    and 2 at the top): with variable header lengths the offset muxes, the 13-way UDP port
-    select, the 34-word checksum mask and the truncation guards would come from the packet
-    chain. The byte-model `ExNet.Filter.key/1` stays the contract.
+20. **defpacket for the classifier.** Evaluated in the integration wave, not adopted. The
+    parser generated from the chain `eth -> vlan{0,2} -> ipv4 (ihl) -> udp` (`defpacket :udp_rx,
+    bus_width: 64`, `Wrap.protocol/2`, Yosys `synth_xilinx -flatten -family xcup`) takes
+    3086 LUT and 1649 FF; `ExNet.RTL.Classifier` with a one entry table, including the 14 stage
+    pass-through, the result queue, the table match, the verdict and `payload_len`, takes 2008 LUT
+    and 1834 FF (a 16 entry table 4087 / 5015). The generated parser also has no BEAM model
+    (`Wrap.protocol` black box), so the cycle-by-cycle tests against `ExNet.Filter` could not run
+    in the BEAM simulator, and it emits the payload stream, not the frame with metadata from the
+    first beat that `ExNet.RTL.Ifc.rx_frame/3` and the FCS verdict on the last beat need.
+    The byte-model `ExNet.Filter.key/1` stays the contract. Wanted before it pays off: a BEAM model
+    for protocol black boxes, and a "pass through and tag" mode (frame unchanged, fields as side
+    outputs) next to the "strip headers" parser.
+
+## Integration with ex_ptp and ex_aes67 (wave 3)
+
+Contracts are `ExNet.RTL.Ifc`; tests are in ex_aes67 (`test/integration/`), ex_ptp
+(`test/integration/`) and `test/rtl/datapath_test.exs`.
+
+Resolved: `tx_tag` and the `tuser` tag of `MacTx`; `rx_sof` / `tx_sof` names and offsets; RX
+`tuser` shared with `RxStamp`; classifier metadata with `payload_offset` and `payload_len`;
+`UdpRx` (payload extraction, store and forward, bad frames dropped); `UdpTx` and `TxPath`
+(header insertion, gapless frames for the MAC); `Classifier.program/3`.
+
+Open:
+
+- UDP checksum verification on receive (needs the sum over the shifted payload; the FCS already
+  protects the link, AES67 senders use 0).
+- IGMP join/leave and ARP/unicast next hop resolution: `UdpTx` takes the unicast MAC from an input.
+- IPv6, and the MAC option that adjusts a UDP checksum after a one-step insertion.
+- `RxPath` and `TxPath` are single clock. A MAC clock different from the system clock needs
+  `ExHdlCores.FIFO.axis_async/1` on the classified frame stream and on the TX stream.
+- `UdpRx` stores the 96 bit metadata with every beat of its FIFO (170 bit wide, 5 BRAM18 for 512
+  beats); a metadata FIFO next to the 73 bit data FIFO would use 3.
+
+ExHdl notes from this wave (the first two have reproducers in items 11, 12 above; they cost
+workarounds in three more places):
+
+- Instance wires `<inst>_<port>` against top level ports, again with a minimal case:
+
+      child = module "c" do a = input(:a, 1); q = output(:phase, 1); q <~ a end
+      module "t" do
+        a = input(:a, 1); p = output(:nco_phase, 1)
+        u = instance(:nco, child, connect: [a: a])
+        p <~ u.phase
+      end
+      # ElaborationError: t: nco_phase is declared twice
+
+- `use ExHdl.RTL` removes the Bitwise operators from `Kernel` also outside `module/3`, so a helper
+  function in such a module fails with `undefined function <<</2` unless it has `import Bitwise`;
+  `<~` is undefined outside `module`/`rtl` blocks, so loops that declare ports have to sit inside
+  the module body. Only a documentation point.
+- Multi-clock closed loop: `Loop` (ex_ptp and ex_aes67 `test/support/loop.ex`) drives `Sim` with
+  `Sim.schedule/3` per event and replays the recorded inputs in Verilator; `ExAes67.Test.Loop.run_cosim/6`
+  predicts a free-running design's outputs for long Verilator-only runs. This is item 17 again.
+- BEAM simulator speed on the receive chain (MAC, classifier, UDP extractor, depacketiser, jitter
+  buffer, timestamp unit, NCO): about 25 cycles per second, so the integration scenarios are
+  1500 to 2000 cycles and take two minutes; Verilator needs seconds (item 18).
+
+## Interop findings
+
+Run against Wireshark 4.4.19 (tshark in a container), the Linux kernel (veth, tcpdump) and
+Wireshark sample captures; commands in README "Interop".
+
+- No protocol bug found in `ExNet.Ethernet`, `IPv4`, `UDP`, `ARP`, `IGMP`: frames built by the
+  library dissect cleanly with equal fields, kernel generated IGMPv3, ARP, UDP and tagged
+  frames decode, and 1100+ frames of three sample captures decode like tshark.
+- Not covered by any real implementation yet: IGMP queries from a real querier (only what
+  `IGMP-dataset.pcap` contains), fragments, IPv4 options other
+  than NOP and router alert, 802.1ad on a real switch, the MAC and PCS layers (no hardware, and
+  Wireshark does not see them).
+- tshark's `checksum.status` is 1 for partial (offloaded) checksums, so the interop tests compute
+  the check with ex_net's own decoders and use tshark only for generated frames, where the
+  checksums are complete.
+

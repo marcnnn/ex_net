@@ -5,7 +5,7 @@ defmodule ExNet.RTL.MacRx do
   errors. All outputs are registered; there is no backpressure (the stream has no
   `tready`). The reference models are `ExNet.MAC.Rx` (8 bit) and `ExNet.MAC.Rx64`
   (64 bit); a model event of cycle `t` shows on the outputs in cycle `t + 1`
-  (`sof`, `frame_end`, `status`) or `t + 2` (stream beats, see below).
+  (`rx_sof`, `frame_end`, `status`) or `t + 2` (stream beats, see below).
 
   Common outputs:
 
@@ -19,9 +19,11 @@ defmodule ExNet.RTL.MacRx do
       was seen before the cut); the exact status follows on `status`.
     * `frame_end` (1 cycle) with `status` (3 bits, same code, held until the next
       frame end): every frame, also those without beats.
-    * `sof`: one cycle, the cycle after the SFD was on the interface (8 bit: the SFD
-      byte; 64 bit: the Start word, with the SFD in lane 7). A timestamp unit that
-      samples a free running counter on `sof` sees the SFD 1 cycle late, constant.
+    * `rx_sof` (`ExNet.RTL.Ifc.ts_rx/0`): one cycle, the cycle after the SFD was on the
+      interface (8 bit: the SFD byte; 64 bit: the Start word, with the SFD in lane 7). A
+      timestamp unit that samples a free running counter on `rx_sof` sees the SFD
+      `ExNet.RTL.Ifc.rx_sof_cycles/0` (1) cycle late, constant. The stream interface is
+      `ExNet.RTL.Ifc.mac_rx/1`.
 
   ## `build(8, opts)`: module `mac_rx_8`
 
@@ -43,6 +45,7 @@ defmodule ExNet.RTL.MacRx do
   """
   use ExHdl.RTL
   alias ExNet.RTL.CRC32, as: Crc
+  alias ExNet.RTL.Ifc
 
   @init 0xFFFFFFFF
   @residue 0xDEBB20E3
@@ -59,12 +62,9 @@ defmodule ExNet.RTL.MacRx do
       dv = input(:gmii_rx_dv, 1)
       rxer = input(:gmii_rx_er, 1)
 
-      m =
-        master(:m_axis, Interface.axi_stream(data: 8, keep: false, user: 4, ready: false),
-          reset: 0
-        )
-
-      sof = output(:sof, 1, reset: 0)
+      m = master(:m_axis, Ifc.mac_rx(8), reset: 0)
+      ts = master(:rx, Ifc.ts_rx(), reset: 0)
+      sof = ts.sof
       fend = output(:frame_end, 1, reset: 0)
       status = output(:status, 3, reset: 0)
 
@@ -181,8 +181,9 @@ defmodule ExNet.RTL.MacRx do
     module name do
       rxd = input(:xgmii_rxd, 64)
       rxc = input(:xgmii_rxc, 8)
-      m = master(:m_axis, Interface.axi_stream(data: 64, user: 4, ready: false), reset: 0)
-      sof = output(:sof, 1, reset: 0)
+      m = master(:m_axis, Ifc.mac_rx(64), reset: 0)
+      ts = master(:rx, Ifc.ts_rx(), reset: 0)
+      sof = ts.sof
       fend = output(:frame_end, 1, reset: 0)
       status = output(:status, 3, reset: 0)
 

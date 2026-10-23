@@ -10,8 +10,7 @@ defmodule ExNet.RTL.Loopback do
       (one block per cycle), `mac_rx_64`. While the PCS has no block lock the MAC receives
       idle words.
 
-  Ports: slave `s_axis` (MAC TX stream: 8 bit with `tdata/tlast/tvalid/tready`, or
-  64 bit with `tkeep`), master `m_axis` (MAC RX stream, `tuser` 4 bits, no `tready`),
+  Ports: slave `s_axis` (MAC TX stream, `ExNet.RTL.Ifc.mac_tx/1`), master `m_axis` (MAC RX stream, `tuser` 4 bits, no `tready`),
   `sof_tx`, `sof_rx`, `frame_end`, `status` (MAC RX), `pcs_sync` (1G: code group sync; 10G:
   block lock), `pcs_dbg` (the remaining PCS status bits, 1G 34, 10G 1).
 
@@ -24,12 +23,12 @@ defmodule ExNet.RTL.Loopback do
   wire rate: 1G one byte per cycle, 10G one beat per cycle.
   """
   use ExHdl.RTL
-  alias ExNet.RTL.{MacRx, MacTx, PCS10GR, PCS1000X}
+  alias ExNet.RTL.{Ifc, MacRx, MacTx, PCS10GR, PCS1000X}
 
   def build(:gbe) do
     module "net_loopback_1g" do
-      s = slave(:s_axis, Interface.axi_stream(data: 8, keep: false))
-      m = master(:m_axis, Interface.axi_stream(data: 8, keep: false, user: 4, ready: false))
+      s = slave(:s_axis, Ifc.mac_tx(8))
+      m = master(:m_axis, Ifc.mac_rx(8))
       sof_tx = output(:sof_tx, 1)
       sof_rx = output(:sof_rx, 1)
       frame_end = output(:frame_end, 1)
@@ -59,8 +58,8 @@ defmodule ExNet.RTL.Loopback do
         )
 
       connect(mrx.m_axis, m)
-      sof_tx <~ mtx.sof
-      sof_rx <~ mrx.sof
+      sof_tx <~ mtx.tx_sof
+      sof_rx <~ mrx.rx_sof
       frame_end <~ mrx.frame_end
       status <~ mrx.status
       pcs_sync <~ prx.sync
@@ -84,8 +83,8 @@ defmodule ExNet.RTL.Loopback do
 
   def build(:xgbe) do
     module "net_loopback_10g" do
-      s = slave(:s_axis, Interface.axi_stream(data: 64))
-      m = master(:m_axis, Interface.axi_stream(data: 64, user: 4, ready: false))
+      s = slave(:s_axis, Ifc.mac_tx(64))
+      m = master(:m_axis, Ifc.mac_rx(64))
       sof_tx = output(:sof_tx, 1)
       sof_rx = output(:sof_rx, 1)
       frame_end = output(:frame_end, 1)
@@ -115,8 +114,8 @@ defmodule ExNet.RTL.Loopback do
         )
 
       connect(mrx.m_axis, m)
-      sof_tx <~ mtx.sof
-      sof_rx <~ mrx.sof
+      sof_tx <~ mtx.tx_sof
+      sof_rx <~ mrx.rx_sof
       frame_end <~ mrx.frame_end
       status <~ mrx.status
       pcs_sync <~ prx.lock

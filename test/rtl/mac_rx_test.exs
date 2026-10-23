@@ -92,7 +92,7 @@ defmodule ExNet.RTL.MacRxTest do
     for {{sof, en, data}, t} <- Enum.with_index(exp), t + 2 < n do
       o1 = Enum.at(outs, t + 1)
       o2 = Enum.at(outs, t + 2)
-      assert o1.sof == b(sof), "sof, cycle #{t}"
+      assert o1.rx_sof == b(sof), "sof, cycle #{t}"
       assert o1.frame_end == b(en != nil), "frame_end, cycle #{t}"
       if en, do: assert(o1.status == Rx64.code(en), "status, cycle #{t}")
 
@@ -196,7 +196,7 @@ defmodule ExNet.RTL.MacRxTest do
 
     for {ev, t} <- Enum.with_index(rows), t + 1 < n do
       o = Enum.at(outs, t + 1)
-      assert o.sof == b(ev.sof), "sof, cycle #{t}"
+      assert o.rx_sof == b(ev.sof), "sof, cycle #{t}"
       assert o.frame_end == b(ev.end != nil), "frame_end, cycle #{t}"
       if ev.end, do: assert(o.status == Rx64.code(ev.end), "status, cycle #{t}")
 

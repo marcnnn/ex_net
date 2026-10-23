@@ -60,6 +60,16 @@ defmodule ExNet.UDP do
 
   def decode(_, _, _), do: {:error, :not_binary}
 
+  @doc """
+  Receive-side checksum check of a datagram `bin` (header and payload, as many bytes as
+  the UDP length says): true when the checksum field is 0 (none) or the sum with the
+  pseudo header (`byte_size(bin)` as length) verifies. The model of `ExNet.RTL.UdpRx`.
+  """
+  def checksum_ok?(<<_::48, 0::16, _::binary>>, _src_ip, _dst_ip), do: true
+
+  def checksum_ok?(bin, src_ip, dst_ip) when byte_size(bin) >= 8,
+    do: Checksum.valid?(bin, pseudo(src_ip, dst_ip, byte_size(bin)))
+
   defp check_len(len, _) when len < 8, do: {:error, :bad_length}
   defp check_len(len, size) when len > size, do: {:error, :truncated}
   defp check_len(_, _), do: :ok

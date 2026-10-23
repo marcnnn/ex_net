@@ -1,0 +1,6 @@
+# Linux kernel traffic source and capture (veth pair, VLANs, IGMP, ARP) for the ex_net reverse tests.
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      iproute2 ethtool tcpdump socat iputils-ping iputils-arping procps \
+ && rm -rf /var/lib/apt/lists/*

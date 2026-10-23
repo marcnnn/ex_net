@@ -12,7 +12,9 @@ defmodule ExNet.RTL.MacTx do
   | `s_axis_tdata`, `_tlast`, `_tvalid` | in | 8, 1, 1 | frame without FCS |
   | `s_axis_tready` | out | 1 | high while a byte is taken (phase data); not a function of `tvalid` |
   | `gmii_txd`, `gmii_tx_en`, `gmii_tx_er` | out | 8, 1, 1 | GMII, registered |
-  | `sof` | out | 1 | high for exactly one cycle, together with the SFD byte (0xD5) on `gmii_txd` |
+  | `s_axis_tuser` | in | 8 | PTP tag of the frame, read when the frame starts (`ExNet.RTL.Ifc.mac_tx/1`) |
+  | `tx_sof` | out | 1 | high for exactly one cycle, together with the SFD byte (0xD5) on `gmii_txd` |
+  | `tx_tag` | out | 8 | the tag of the frame being sent, valid in the `tx_sof` cycle and held |
 
   A frame starts in the cycle `tvalid` is seen while idle (that cycle's output word
   appears one cycle later as the first preamble byte). `tready` stays low for the 8
@@ -30,7 +32,9 @@ defmodule ExNet.RTL.MacTx do
   | `s_axis_tdata`, `_tkeep`, `_tlast`, `_tvalid` | in | 64, 8, 1, 1 | tkeep is all ones except on the last beat, contiguous from lane 0 |
   | `s_axis_tready` | out | 1 | high while a beat is taken (phase data); the first beat is taken one cycle after `tvalid` is first seen |
   | `xgmii_txd`, `xgmii_txc` | out | 64, 8 | lane `i` in bits `8i+7..8i`, `txc[i]` for a control character; registered |
-  | `sof` | out | 1 | one cycle, together with the Start word (SFD in lane 7) |
+  | `s_axis_tuser` | in | 8 | PTP tag of the frame, read when the frame starts (`ExNet.RTL.Ifc.mac_tx/1`) |
+  | `tx_sof` | out | 1 | one cycle, together with the Start word (SFD in lane 7) |
+  | `tx_tag` | out | 8 | the tag of the frame being sent, valid in the `tx_sof` cycle and held |
 
   Word sequence: Start word, one word per beat (full throughput, no bubble), zero pad
   words below 60 bytes, the word with the last data bytes, FCS directly behind them,
@@ -41,6 +45,7 @@ defmodule ExNet.RTL.MacTx do
   """
   use ExHdl.RTL
   alias ExNet.RTL.CRC32, as: Crc
+  alias ExNet.RTL.Ifc
 
   @init 0xFFFFFFFF
 
@@ -52,11 +57,12 @@ defmodule ExNet.RTL.MacTx do
     name = if ifg == 12, do: "mac_tx_8", else: "mac_tx_8_ifg#{ifg}"
 
     module name do
-      s = slave(:s_axis, Interface.axi_stream(data: 8, keep: false))
+      s = slave(:s_axis, Ifc.mac_tx(8))
       txd = output(:gmii_txd, 8, reset: 0)
       txen = output(:gmii_tx_en, 1, reset: 0)
       txer = output(:gmii_tx_er, 1, reset: 0)
-      sof = output(:sof, 1, reset: 0)
+      ts = master(:tx, Ifc.ts_tx(), reset: 0)
+      sof = ts.sof
 
       # phases: 0 idle, 1 preamble, 2 data, 3 pad, 4 fcs, 5 gap
       phase = reg(:phase, 3, reset: 0)
@@ -123,6 +129,7 @@ defmodule ExNet.RTL.MacTx do
         if idle and s.tvalid do
           phase <~ 1
           cnt <~ 1
+          ts.tag <~ s.tuser
         end
 
         if pre do
@@ -179,10 +186,11 @@ defmodule ExNet.RTL.MacTx do
 
   def build(64, _opts) do
     module "mac_tx_64" do
-      s = slave(:s_axis, Interface.axi_stream(data: 64))
+      s = slave(:s_axis, Ifc.mac_tx(64))
       txd = output(:xgmii_txd, 64, reset: 0x0707070707070707)
       txc = output(:xgmii_txc, 8, reset: 0xFF)
-      sof = output(:sof, 1, reset: 0)
+      ts = master(:tx, Ifc.ts_tx(), reset: 0)
+      sof = ts.sof
 
       # phases: 0 idle, 1 data, 2 pad, 3 tail word, 4 gap
       phase = reg(:phase, 3, reset: 0)
@@ -340,6 +348,7 @@ defmodule ExNet.RTL.MacTx do
           phase <~ 1
           nb <~ 0
           crc <~ @init
+          ts.tag <~ s.tuser
         end
 
         if data do

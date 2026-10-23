@@ -34,7 +34,8 @@ defmodule ExNet.RTL.Classifier do
     * `m_src_port`, `m_dst_port` (16), `m_payload_valid` (UDP header found, as
       `Filter.key`: protocol 17, unfragmented), `m_payload_offset` (7: byte offset of
       the UDP payload from the start of the frame, i.e. lane `offset % 8` of beat
-      `offset / 8`; 22..90, 0 when not valid)
+      `offset / 8`; 22..90, 0 when not valid), `m_payload_len` (16: UDP payload bytes, the
+      UDP length minus 8 clamped to what the IP total length leaves, 0 when not valid)
     * `ovf` (sticky): the result queue overflowed (frames shorter than the minimum
       period below)
 
@@ -85,6 +86,9 @@ defmodule ExNet.RTL.Classifier do
       payload per total length (as the model).
   """
   use ExHdl.RTL
+  import Bitwise
+  alias ExNet.RTL.Ifc
+  alias ExNet.{Filter, IPv4}
 
   @window 12
   @delay 14
@@ -116,37 +120,17 @@ defmodule ExNet.RTL.Classifier do
       do: raise(ArgumentError, "entries >= 1, 1 <= stream_bits <= 8, slots >= 2")
 
     module "rxcls_n#{n}_s#{sb}_r#{slots}" do
-      s_data = input(:s_tdata, 64)
-      s_keep = input(:s_tkeep, 8)
-      s_last = input(:s_tlast, 1)
-      s_user = input(:s_tuser, 4)
-      s_valid = input(:s_tvalid, 1)
+      s = slave(:s, Ifc.mac_rx(64))
+      s_data = s.tdata
+      s_keep = s.tkeep
+      s_last = s.tlast
+      s_user = s.tuser
+      s_valid = s.tvalid
       cfg_we = input(:cfg_we, 1)
       cfg_addr = input(:cfg_addr, iw + 3)
       cfg_data = input(:cfg_data, 32)
 
-      m_data = output(:m_tdata, 64)
-      m_keep = output(:m_tkeep, 8)
-      m_last = output(:m_tlast, 1)
-      m_user = output(:m_tuser, 4)
-      m_valid = output(:m_tvalid, 1)
-      m_sof = output(:m_sof, 1)
-      m_kind = output(:m_kind, 2)
-      m_stream = output(:m_stream, sb)
-      m_hit = output(:m_hit, 1)
-      m_hit_idx = output(:m_hit_index, hw)
-      m_vlan_id = output(:m_vlan_id, 12)
-      m_vlan_v = output(:m_vlan_valid, 1)
-      m_ntags = output(:m_ntags, 2)
-      m_etype = output(:m_ethertype, 16)
-      m_ip_v = output(:m_ip_valid, 1)
-      m_proto = output(:m_ip_proto, 8)
-      m_src_ip = output(:m_src_ip, 32)
-      m_dst_ip = output(:m_dst_ip, 32)
-      m_sport = output(:m_src_port, 16)
-      m_dport = output(:m_dst_port, 16)
-      m_pay_v = output(:m_payload_valid, 1)
-      m_poff = output(:m_payload_offset, 7)
+      m = master(:m, Ifc.rx_frame(sb, hw))
       m_ovf = output(:ovf, 1)
 
       # -- stage A: header capture and event --------------------------------------------
@@ -273,6 +257,7 @@ defmodule ExNet.RTL.Classifier do
           f.proto_o,
           f.ipok,
           f.poff,
+          f.plen,
           f.udpok,
           kind,
           stream,
@@ -347,30 +332,102 @@ defmodule ExNet.RTL.Classifier do
       fields = unpack(rd, sb, hw)
       bad_last = wire(:bad_last, out.l and out.u[0])
 
-      m_data <~ out.d
-      m_keep <~ out.k
-      m_last <~ out.l
-      m_user <~ out.u
-      m_valid <~ out.v
-      m_sof <~ out.s
-      m_kind <~ mux(bad_last, const(0, 2), fields.kind)
-      m_stream <~ mux(bad_last, const(0, sb), fields.stream)
-      m_hit <~ mux(bad_last, const(0, 1), fields.hit)
-      m_hit_idx <~ mux(bad_last, const(0, hw), fields.hit_idx)
-      m_vlan_id <~ fields.vid
-      m_vlan_v <~ fields.vlan_v
-      m_ntags <~ fields.ntags
-      m_etype <~ fields.etype
-      m_ip_v <~ fields.ipok
-      m_proto <~ fields.proto
-      m_src_ip <~ fields.src
-      m_dst_ip <~ fields.dst
-      m_sport <~ fields.sport
-      m_dport <~ fields.dport
-      m_pay_v <~ fields.udpok
-      m_poff <~ fields.poff
+      m.tdata <~ out.d
+      m.tkeep <~ out.k
+      m.tlast <~ out.l
+      m.tuser <~ out.u
+      m.tvalid <~ out.v
+      m.sof <~ out.s
+      m.kind <~ mux(bad_last, const(0, 2), fields.kind)
+      m.stream <~ mux(bad_last, const(0, sb), fields.stream)
+      m.hit <~ mux(bad_last, const(0, 1), fields.hit)
+      m.hit_index <~ mux(bad_last, const(0, hw), fields.hit_idx)
+      m.vlan_id <~ fields.vid
+      m.vlan_valid <~ fields.vlan_v
+      m.ntags <~ fields.ntags
+      m.ethertype <~ fields.etype
+      m.ip_valid <~ fields.ipok
+      m.ip_proto <~ fields.proto
+      m.src_ip <~ fields.src
+      m.dst_ip <~ fields.dst
+      m.src_port <~ fields.sport
+      m.dst_port <~ fields.dport
+      m.payload_valid <~ fields.udpok
+      m.payload_offset <~ fields.poff
+      m.payload_len <~ fields.plen
       m_ovf <~ ovf
     end
+  end
+
+  @doc """
+  `{cfg_addr, cfg_data}` writes (in order) that program the table of an `n` entry
+  classifier with `stream_bits` = `sb` from an `ExNet.Filter` (rules in order, first match
+  wins, `default` action in the default slot; at most `n` rules): entry words 1..7 before
+  word 0 so an entry goes live atomically.
+  """
+  def program(%Filter{rules: rules, default: default}, n, sb) do
+    rules = Enum.take(rules, n)
+
+    entries =
+      for {{m, action}, i} <- Enum.with_index(rules) do
+        {w0, rest} = entry_words(m, action, sb)
+        for({w, d} <- rest, do: {i * 8 + w, d}) ++ [{i * 8, w0}]
+      end
+
+    {kind, st} = action_bits(default)
+    List.flatten(entries) ++ [{n * 8, kind <<< 1 ||| st <<< 8}]
+  end
+
+  defp action_bits(:drop), do: {0, 0}
+  defp action_bits(:host), do: {1, 0}
+  defp action_bits({:stream, k}), do: {2, k}
+
+  defp entry_words(m, action, _sb) do
+    {kind, st} = action_bits(action)
+    flags = flag_bits()
+
+    {mac, mask} =
+      case m[:dst_mac] do
+        nil -> {0, 0}
+        {v, mk} -> {:binary.decode_unsigned(v), :binary.decode_unsigned(mk)}
+        v -> {:binary.decode_unsigned(v), 0xFFFF_FFFF_FFFF}
+      end
+
+    {plo, phi} =
+      case m[:udp_dst_port] do
+        nil -> {0, 0}
+        %Range{first: a, last: z} -> {a, z}
+        p -> {p, p}
+      end
+
+    en = %{
+      mac: Map.has_key?(m, :dst_mac),
+      mc: Map.has_key?(m, :multicast),
+      mcv: m[:multicast] == true,
+      vlan: Map.has_key?(m, :vlan),
+      et: Map.has_key?(m, :ethertype),
+      proto: Map.has_key?(m, :ip_proto),
+      ip: Map.has_key?(m, :ip_dst),
+      port: Map.has_key?(m, :udp_dst_port)
+    }
+
+    w0 =
+      Enum.reduce(flags, 1 ||| kind <<< 1 ||| st <<< 8, fn {k, bit}, a ->
+        if en[k], do: a ||| 1 <<< bit, else: a
+      end)
+
+    ip = if m[:ip_dst], do: IPv4.ip_int(m[:ip_dst]), else: 0
+
+    {w0,
+     [
+       {1, mac &&& 0xFFFF_FFFF},
+       {2, mac >>> 32 ||| (m[:vlan] || 0) <<< 16},
+       {3, mask &&& 0xFFFF_FFFF},
+       {4, mask >>> 32 ||| (m[:ethertype] || 0) <<< 16},
+       {5, ip},
+       {6, plo ||| phi <<< 16},
+       {7, m[:ip_proto] || 0}
+     ]}
   end
 
   # -- helpers -------------------------------------------------------------------------
@@ -431,7 +488,8 @@ defmodule ExNet.RTL.Classifier do
       udpok: 1,
       sport: 16,
       dport: 16,
-      poff: 7
+      poff: 7,
+      plen: 16
     ]
   end
 
@@ -449,6 +507,7 @@ defmodule ExNet.RTL.Classifier do
       proto: 8,
       ipok: 1,
       poff: 7,
+      plen: 16,
       udpok: 1,
       kind: 2,
       stream: sb,
@@ -528,11 +587,17 @@ defmodule ExNet.RTL.Classifier do
         mux(
           u,
           for uu <- 0..31 do
-            if uu >= 5 and uu <= 17, do: be.(14 + 4 * uu, 4), else: const(0, 32)
+            if uu >= 5 and uu <= 17, do: be.(14 + 4 * uu, 6), else: const(0, 48)
           end
         )
 
       zero = fn c, v, w -> mux(c, v, const(0, w)) end
+
+      # UDP payload bytes: UDP length - 8, at most what the IP total length leaves
+      ulen = ports[0..15]
+      avail = sub_wrap(total, zext(hlen, 16))
+      shorter = mux(ulen < avail, ulen, avail)
+      plen = mux(shorter >= 8, sub_wrap(shorter, 8), const(0, 16))
 
       %{
         mac: cat(for j <- 0..5, do: byte.(j)),
@@ -549,9 +614,10 @@ defmodule ExNet.RTL.Classifier do
         src: zero.(ipok, at.(fn o -> be.(o + 12, 4) end), 32),
         dst: zero.(ipok, at.(fn o -> be.(o + 16, 4) end), 32),
         udpok: udpok,
-        sport: zero.(udpok, ports[16..31], 16),
-        dport: zero.(udpok, ports[0..15], 16),
-        poff: zero.(udpok, add_wrap(cat([u, const(0, 2)]), 22), 7)
+        sport: zero.(udpok, ports[32..47], 16),
+        dport: zero.(udpok, ports[16..31], 16),
+        poff: zero.(udpok, add_wrap(cat([u, const(0, 2)]), 22), 7),
+        plen: zero.(udpok, plen, 16)
       }
     end
   end

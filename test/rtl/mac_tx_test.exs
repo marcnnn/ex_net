@@ -49,7 +49,7 @@ defmodule ExNet.RTL.MacTxTest do
         nx = Enum.at(outs, t + 1)
         ev = Enum.at(events, t)
 
-        assert {nx.gmii_txd, nx.gmii_tx_en, nx.gmii_tx_er, nx.sof} ==
+        assert {nx.gmii_txd, nx.gmii_tx_en, nx.gmii_tx_er, nx.tx_sof} ==
                  {d, b(en), b(er), b(sfd)},
                "cycle #{t}"
 
@@ -104,7 +104,7 @@ defmodule ExNet.RTL.MacTxTest do
         o = Enum.at(outs, t)
         nx = Enum.at(outs, t + 1)
         ev = Enum.at(events, t)
-        assert {nx.xgmii_txd, nx.xgmii_txc, nx.sof} == {d, c, b(sof)}, "cycle #{t}"
+        assert {nx.xgmii_txd, nx.xgmii_txc, nx.tx_sof} == {d, c, b(sof)}, "cycle #{t}"
         assert (o.s_axis_tready == 1 and ev.s_axis_tvalid == 1) == ready, "ready, cycle #{t}"
       end
     end

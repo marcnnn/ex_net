@@ -146,71 +146,8 @@ defmodule ExNet.ClassifierGen do
 
   # -- table programming -------------------------------------------------------------------
 
-  @doc "`{cfg_addr, cfg_data}` writes for the rules and default of `filter` (entry words 1..7 before word 0)."
-  def program(%Filter{rules: rules, default: default}, n, sb) do
-    rules = Enum.take(rules, n)
-
-    entries =
-      for {{m, action}, i} <- Enum.with_index(rules) do
-        {w0, rest} = entry_words(m, action, sb)
-        for({w, d} <- rest, do: {i * 8 + w, d}) ++ [{i * 8, w0}]
-      end
-
-    {kind, st} = action_bits(default)
-    List.flatten(entries) ++ [{n * 8, kind <<< 1 ||| st <<< 8}]
-  end
-
-  defp action_bits(:drop), do: {0, 0}
-  defp action_bits(:host), do: {1, 0}
-  defp action_bits({:stream, k}), do: {2, k}
-
-  defp entry_words(m, action, _sb) do
-    {kind, st} = action_bits(action)
-    flags = ExNet.RTL.Classifier.flag_bits()
-
-    {mac, mask} =
-      case m[:dst_mac] do
-        nil -> {0, 0}
-        {v, mk} -> {:binary.decode_unsigned(v), :binary.decode_unsigned(mk)}
-        v -> {:binary.decode_unsigned(v), 0xFFFF_FFFF_FFFF}
-      end
-
-    {plo, phi} =
-      case m[:udp_dst_port] do
-        nil -> {0, 0}
-        %Range{first: a, last: z} -> {a, z}
-        p -> {p, p}
-      end
-
-    en = %{
-      mac: Map.has_key?(m, :dst_mac),
-      mc: Map.has_key?(m, :multicast),
-      mcv: m[:multicast] == true,
-      vlan: Map.has_key?(m, :vlan),
-      et: Map.has_key?(m, :ethertype),
-      proto: Map.has_key?(m, :ip_proto),
-      ip: Map.has_key?(m, :ip_dst),
-      port: Map.has_key?(m, :udp_dst_port)
-    }
-
-    w0 =
-      Enum.reduce(flags, 1 ||| kind <<< 1 ||| st <<< 8, fn {k, bit}, a ->
-        if en[k], do: a ||| 1 <<< bit, else: a
-      end)
-
-    ip = if m[:ip_dst], do: IPv4.ip_int(m[:ip_dst]), else: 0
-
-    {w0,
-     [
-       {1, mac &&& 0xFFFF_FFFF},
-       {2, mac >>> 32 ||| (m[:vlan] || 0) <<< 16},
-       {3, mask &&& 0xFFFF_FFFF},
-       {4, mask >>> 32 ||| (m[:ethertype] || 0) <<< 16},
-       {5, ip},
-       {6, plo ||| phi <<< 16},
-       {7, m[:ip_proto] || 0}
-     ]}
-  end
+  @doc "See `ExNet.RTL.Classifier.program/3`."
+  defdelegate program(filter, n, sb), to: ExNet.RTL.Classifier
 
   # -- rules ----------------------------------------------------------------------------
 
@@ -269,6 +206,45 @@ defmodule ExNet.ClassifierGen do
 
   # -- expectations ---------------------------------------------------------------------
 
+  @doc """
+  The UDP payload packets `ExNet.RTL.UdpRx` must produce for `frames` (`{frame, bad, _}`):
+  `{tuser, payload}` per good frame that the filter steers to a stream.
+  """
+  def udp_packets(filter, frames) do
+    for {frame, bad, _} <- frames, not bad, reduce: [] do
+      acc ->
+        exp = expected(filter, frame, bad).pre
+
+        off = exp.m_payload_offset
+        len = exp.m_payload_len
+
+        if exp.m_kind == 2 and exp.m_payload_valid == 1 and len > 0 and
+             udp_ok?(frame, off, len, exp) do
+          user =
+            ExNet.RTL.Ifc.pack_udp_rx(%{
+              dst_ip: exp.m_dst_ip,
+              dst_port: exp.m_dst_port,
+              src_ip: exp.m_src_ip,
+              len: exp.m_payload_len
+            })
+
+          [{user, binary_part(frame, exp.m_payload_offset, exp.m_payload_len)} | acc]
+        else
+          acc
+        end
+    end
+    |> Enum.reverse()
+  end
+
+  defp udp_ok?(frame, off, len, exp) do
+    byte_size(frame) < off + len or
+      ExNet.UDP.checksum_ok?(
+        binary_part(frame, off - 8, len + 8),
+        ExNet.IPv4.ip_tuple(exp.m_src_ip),
+        ExNet.IPv4.ip_tuple(exp.m_dst_ip)
+      )
+  end
+
   @doc "Expected metadata of `frame` through `filter` (the BEAM models are the contract)."
   def expected(filter, frame, bad) do
     {action, hit} = Filter.classify_rule(filter, frame, not bad)
@@ -280,6 +256,10 @@ defmodule ExNet.ClassifierGen do
       final: Map.merge(fields, verdict(action, hit))
     }
   end
+
+  defp action_bits(:drop), do: {0, 0}
+  defp action_bits(:host), do: {1, 0}
+  defp action_bits({:stream, k}), do: {2, k}
 
   defp verdict(action, hit) do
     {kind, st} = action_bits(action)
@@ -299,7 +279,8 @@ defmodule ExNet.ClassifierGen do
       m_src_port: 0,
       m_dst_port: 0,
       m_payload_valid: 0,
-      m_payload_offset: 0
+      m_payload_offset: 0,
+      m_payload_len: 0
     }
 
     case Ethernet.decode(frame) do
@@ -342,7 +323,8 @@ defmodule ExNet.ClassifierGen do
             | m_payload_valid: 1,
               m_src_port: u.src_port,
               m_dst_port: u.dst_port,
-              m_payload_offset: off
+              m_payload_offset: off,
+              m_payload_len: max(min(u.length, byte_size(ip.payload)) - 8, 0)
           }
         else
           _ -> base
