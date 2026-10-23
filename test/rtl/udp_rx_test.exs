@@ -144,6 +144,20 @@ defmodule ExNet.RTL.UdpRxTest do
       assert pk == expected(frames, filter())
     end
 
+    test "UDP checksum: a bad one drops the packet, zero means none" do
+      ok = Frames.udp_frame(payload: "checksummed payload")
+      <<h::binary-size(42), c, rest::binary>> = ok
+      corrupt = <<h::binary, Bitwise.bxor(c, 0x40), rest::binary>>
+      <<h0::binary-size(40), _::16, rest0::binary>> = corrupt
+      none = <<h0::binary, 0::16, rest0::binary>>
+      odd = Frames.udp_frame(payload: "odd")
+      frames = [{corrupt, false, 0}, {none, false, 0}, {ok, false, 0}, {odd, false, 0}]
+      {_, outs, pk} = run(scenario(frames, filter()), fn _ -> 1 end, 60)
+      assert Enum.map(pk, &elem(&1, 1)) == ["#hecksummed payload", "checksummed payload", "odd"]
+      assert Enum.any?(outs, &(&1.drop_bad == 1))
+      assert pk == expected(frames, filter())
+    end
+
     test "FIFO overflow drops whole packets and keeps the next ones intact" do
       big = Frames.udp_frame(payload: :binary.copy(<<0xAB>>, 400))
       small = Frames.udp_frame(payload: "tiny packet bytes")

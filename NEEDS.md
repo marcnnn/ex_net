@@ -94,9 +94,10 @@ and Verilator, slices/concat/`cat` cover the CRC and ROM needs. Nothing here blo
     about 3 s per random scenario of a few hundred cycles in `Sim`, a minute for its test
     file; Verilator runs the same stimulus in well under a second. A cheaper evaluation
     schedule (or caching of constant subtrees) would help large designs.
-19. **Generic blocks written locally** (to deduplicate into ex_hdl_cores): CRC-32 with `keep`
-    (`ExNet.RTL.CRC32`; the matrix-masked XOR network, `next_keep/4` costs 1580 LUT at
-    64 bit, a shared network with a shifter would be smaller), LFSR/scrambler matrices by unit
+19. **Generic blocks written locally** (to deduplicate into ex_hdl_cores): the standalone
+    CRC-32 now comes from `ExHdlCores.CRC.build/2`; the MACs still inline
+    `ExNet.RTL.CRC32.next_keep/4` into their own state register (1580 LUT at 64 bit), wanted
+    from cores: a `CRC.next_expr(params, state, data, keep, bytes)` helper for that use, LFSR/scrambler matrices by unit
     vectors (`ExNet.RTL.Scrambler.masks/1`), AXI4-Stream source/driver for tests
     (`test/support/axis_source.ex`), comma aligner, header capture buffer with a fixed delay
     line and result ring (`ExNet.RTL.Classifier`), ones' complement checksum tree over a
@@ -126,9 +127,13 @@ Resolved: `tx_tag` and the `tuser` tag of `MacTx`; `rx_sof` / `tx_sof` names and
 
 Open:
 
-- UDP checksum verification on receive (needs the sum over the shifted payload; the FCS already
-  protects the link, AES67 senders use 0).
-- IGMP join/leave and ARP/unicast next hop resolution: `UdpTx` takes the unicast MAC from an input.
+- IGMP in hardware: `ExNet.IGMP.Host` is the BEAM model and frame builder (v2/v3 joins,
+  query responses, v2 fallback); the RTL report generator (a small frame ROM per group plus the
+  checksum patch, or a host CPU path through `TxPath`) is not written. ARP/unicast next hop
+  resolution: `UdpTx` takes the unicast MAC from an input.
+- `UdpRx` verifies the UDP checksum with its own 8-byte masked sum per beat (32 bit
+  accumulator, fold on `tlast`); `ExHdlCores.Checksum` (uncommitted in cores at the time) could
+  replace it once its API is settled.
 - IPv6, and the MAC option that adjusts a UDP checksum after a one-step insertion.
 - `RxPath` and `TxPath` are single clock. A MAC clock different from the system clock needs
   `ExHdlCores.FIFO.axis_async/1` on the classified frame stream and on the TX stream.
