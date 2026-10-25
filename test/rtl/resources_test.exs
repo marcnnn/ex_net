@@ -10,6 +10,7 @@ defmodule ExNet.RTL.ResourcesTest do
     AutoNeg,
     Classifier,
     CRC32,
+    Igmp,
     Loopback,
     MacRx,
     MacTx,
@@ -62,5 +63,14 @@ defmodule ExNet.RTL.ResourcesTest do
       assert u.ff <= unquote(ff), "FF #{u.ff}"
       assert u.dsp == 0 and u.bram18 <= unquote(bram)
     end
+  end
+
+  test "igmp_g16 (16 groups, no VLAN) synthesises within budget" do
+    {:ok, u} = Synth.utilization(Igmp.build(groups: 16))
+    IO.puts("igmp_g16: lut #{u.lut} ff #{u.ff} carry #{u.carry} bram18 #{u.bram18} dsp #{u.dsp}")
+    assert u.lut <= 3750, "LUT #{u.lut}"
+    assert u.ff <= 2850, "FF #{u.ff}"
+    # one 16 x 16 multiplier scales the random delay
+    assert u.dsp <= 1 and u.bram18 == 0
   end
 end

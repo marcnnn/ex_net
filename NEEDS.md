@@ -127,9 +127,14 @@ Resolved: `tx_tag` and the `tuser` tag of `MacTx`; `rx_sof` / `tx_sof` names and
 
 Open:
 
-- IGMP in hardware: `ExNet.IGMP.Host` is the BEAM model and frame builder (v2/v3 joins,
-  query responses, v2 fallback); the RTL report generator (a small frame ROM per group plus the
-  checksum patch, or a host CPU path through `TxPath`) is not written. ARP/unicast next hop
+- IGMP in hardware: done as `ExNet.RTL.Igmp` (v2 and v3 host, table of joined groups behind a
+  command port, query responses, unsolicited reports, own frames; `TxPath` has `raw:` sources for
+  it, `ExNet.NetTops.igmp_top/1` is the wiring). Open: a CSR wrapper (the command port and the
+  `member` / `rd_*` read-back are plain ports), group-and-source filtering (only any-source
+  `EXCLUDE {}` joins), IGMPv3 reports of more than the table size are not split, VLAN is one tag
+  of fixed priority 6 from a static `vlan_id`, an event is dropped (`rx_missed`) if a second
+  IGMP frame arrives within about 40 cycles of the first, a leave right after a join of the same
+  group (within about 16 cycles) cancels the join's first report. ARP/unicast next hop
   resolution: `UdpTx` takes the unicast MAC from an input.
 - `UdpRx` verifies the UDP checksum with its own 8-byte masked sum per beat (32 bit
   accumulator, fold on `tlast`); `ExHdlCores.Checksum` (uncommitted in cores at the time) could
@@ -172,8 +177,9 @@ Wireshark sample captures; commands in README "Interop".
 - No protocol bug found in `ExNet.Ethernet`, `IPv4`, `UDP`, `ARP`, `IGMP`: frames built by the
   library dissect cleanly with equal fields, kernel generated IGMPv3, ARP, UDP and tagged
   frames decode, and 1100+ frames of three sample captures decode like tshark.
-- Not covered by any real implementation yet: IGMP queries from a real querier (only what
-  `IGMP-dataset.pcap` contains), fragments, IPv4 options other
+- Frames sent by `ExNet.RTL.Igmp` dissect cleanly in tshark (checksums, Router Alert, records);
+  not covered by any real implementation yet: IGMP queries from a real querier (only what
+  `IGMP-dataset.pcap` contains), a switch's IGMP snooping reacting to the RTL's reports, fragments, IPv4 options other
   than NOP and router alert, 802.1ad on a real switch, the MAC and PCS layers (no hardware, and
   Wireshark does not see them).
 - tshark's `checksum.status` is 1 for partial (offloaded) checksums, so the interop tests compute

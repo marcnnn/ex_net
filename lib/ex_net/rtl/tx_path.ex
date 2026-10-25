@@ -16,7 +16,13 @@ defmodule ExNet.RTL.TxPath do
   dropped; a frame larger than `depth` beats (default 512, 4 KB) would block, which the
   Ethernet MTU rules out.
 
-  Options: `sources:` (2), `depth:` (512), `style:` (`:block`).
+  `raw:` adds that many sources that already carry whole frames (`r<j>_axis`,
+  `ExNet.RTL.Ifc.mac_tx/1`, e.g. `ExNet.RTL.Igmp`): they get the same store-and-forward
+  FIFO and join the round robin after the UDP sources (merge input `n + j`), no header
+  insertion. `tuser` (the PTP tag) is passed through. They add bits to `drop` (after the UDP
+  sources, always 0) and a `r<j>_level` port each.
+
+  Options: `sources:` (2), `raw:` (0), `depth:` (512), `style:` (`:block`).
   """
   use ExHdl.RTL
   alias ExHdlCores.{AXIS, FIFO}
@@ -24,18 +30,19 @@ defmodule ExNet.RTL.TxPath do
 
   def build(opts \\ []) do
     n = Keyword.get(opts, :sources, 2)
+    raw = Keyword.get(opts, :raw, 0)
     depth = Keyword.get(opts, :depth, 512)
     style = Keyword.get(opts, :style, :block)
     aw = ExHdl.RTL.Builder.ceil_log2(depth) + 1
     fifo = FIFO.packet(data: 64, user: 8, depth: depth, style: style, drop_on_full: false)
-    merge = AXIS.merge(n, data: 64, user: 8)
+    merge = AXIS.merge(n + raw, data: 64, user: 8)
 
-    module "tx_path_n#{n}_d#{depth}_#{style}" do
+    module "tx_path_n#{n}_d#{depth}_#{style}#{if raw > 0, do: "_r#{raw}", else: ""}" do
       src_mac = input(:src_mac, 48)
       src_ip = input(:src_ip, 32)
       uc_mac = input(:uc_mac, 48)
       m = master(:m_axis, Ifc.mac_tx(64))
-      drop = output(:drop, n)
+      drop = output(:drop, n + raw)
       mg = instance(:u_merge, merge)
 
       drops =
@@ -63,8 +70,18 @@ defmodule ExNet.RTL.TxPath do
           f.drop_bad or f.drop_full
         end
 
+      raw_drops =
+        for j <- 0..(raw - 1)//1 do
+          s = slave(:"r#{j}_axis", Ifc.mac_tx(64))
+          f = instance(:"u_rfifo#{j}", fifo)
+          connect(s, f.s_axis)
+          connect(f.m_axis, mg[:"s#{n + j}_axis"])
+          output(:"r#{j}_level", aw) <~ f.level
+          f.drop_bad or f.drop_full
+        end
+
       connect(mg.m_axis, m)
-      drop <~ cat(Enum.reverse(drops))
+      drop <~ cat(Enum.reverse(drops ++ raw_drops))
     end
   end
 end

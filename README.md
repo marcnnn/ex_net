@@ -23,6 +23,7 @@ between the MAC and those libraries (integration tests in ex_aes67, `test/integr
 | Filtering | `ExNet.Filter` | `ExNet.RTL.Classifier` | Ethernet + 2 VLAN, IPv4 any IHL, UDP, 16 entry table, UDP payload offset and length |
 | UDP payload RX | | `ExNet.RTL.UdpRx` | payload realigned to lane 0 behind a store-and-forward packet FIFO, bad frames dropped |
 | UDP payload TX | `ExNet.Ethernet`, `IPv4`, `UDP` | `ExNet.RTL.UdpTx`, `TxPath` | Ethernet/IPv4/UDP header insertion, multicast MAC from the IP, store-and-forward merge of sources |
+| IGMP host | `ExNet.IGMP`, `IGMP.Host` | `ExNet.RTL.Igmp` | IGMPv2/v3 join and leave from a command port, query responses with random delay, own frames (Router Alert, CS6, multicast MAC), `TxPath` `raw:` source |
 | Datapaths | | `ExNet.RTL.RxPath`, `TxPath` | MAC RX, classifier, `UdpRx`; sources, `UdpTx`, packet FIFOs, merge |
 | Loopback | | `ExNet.RTL.Loopback` | MAC TX, PCS TX, PCS RX, MAC RX for 1G and 10G |
 | Transceivers, NIC test | | | not started |
@@ -95,6 +96,7 @@ unless noted. The moduledocs list every port.
 | `RTL.Classifier.build/1` | `Ifc.mac_rx` in (no `tready`), table write port; `Ifc.rx_frame` out (stream plus metadata) | frame passes unchanged 14 cycles later, verdict and header fields (with `payload_offset`, `payload_len`) valid from the first beat; `Classifier.program/3` makes the table writes from an `ExNet.Filter` |
 | `RTL.UdpRx.build/1` | `Ifc.rx_frame` in; `Ifc.udp_rx` out | UDP payload of `kind = 2` frames from lane 0, whole packets only, metadata in `tuser`; a bad FCS drops the packet, `drop_full` if the FIFO is full |
 | `RTL.UdpTx.build/0` | `Ifc.udp_tx` in; `Ifc.mac_tx` out; `src_mac`, `src_ip`, `uc_mac`, `src_port`, `ttl`, `tos`, `tag` | 5 header beats, payload shifted by 2 lanes; IPv4 checksum, DF, id from a packet counter, UDP checksum 0 |
+| `RTL.Igmp.build/1` | `Ifc.rx_frame` in (from the classifier); command port `cmd_valid/leave/group`, `src_mac`, `src_ip`, `v2_only`, `robustness`, `unsol_ms`; `Ifc.mac_tx` out (may pause, use a packet FIFO); `member`, `joined`, `mode_v2` | table of joined groups, reports sent `robustness` times on join and leave, general and group-specific query answers after a random delay up to the maximum response time, v2 compatibility and report suppression; frames equal `ExNet.IGMP.Host.frame/3`; see the moduledoc and "IGMP" below |
 | `RTL.RxPath.build/1`, `RTL.TxPath.build/1` | see the moduledocs | `MacRx` + `Classifier` + `UdpRx`; `n` sources through `UdpTx` and packet FIFOs, merged packet by packet |
 | `RTL.Loopback.build(:gbe \| :xgbe)` | AXI4-Stream in and out | first output beat 20 (1G) or 6 (10G) cycles after the first input beat |
 
@@ -184,12 +186,32 @@ re-measures and enforces upper bounds (about 5 minutes).
 | `udp_tx` | 414 | 75 | 26 | 0 | 0 |
 | `tx_path_n2` (2 sources, 512 beat FIFOs) | 1026 | 223 | 80 | 6 | 0 |
 | `rx_path_n16` (`mac_rx_64`, classifier, `udp_rx`) | 6318 | 5592 | 132 | 5 | 76 |
+| `igmp_g16` (16 groups, one DSP48 for the random delay) | 2979 | 2274 | 144 | 0 | 0 |
 
 (1) Yosys turns the constant synchronisation next-state table into a RAMB18; a
 LUT implementation would be a few LUTs (see NEEDS.md). The 64 bit CRC and MAC numbers are
 dominated by the partial-word variants (`keep` selects one of 8 XOR networks). The
 classifier is dominated by the table registers (16 entries x 8 words x 32 bits); with a one entry
 table it is 2008 LUT and 1834 FF. `udp_rx` stores the 96 bit metadata with every FIFO beat (see NEEDS.md).
+
+## IGMP
+
+`ExNet.RTL.Igmp` is the hardware twin of `ExNet.IGMP.Host` (the BEAM model and frame builder):
+the same message choices (v3 `change_to_exclude` / `change_to_include` records, v2 report and
+leave, `mode_is_exclude` answers, v2 compatibility after a v1/v2 query, v2 suppression); only the
+random delays differ (a 32 bit LFSR instead of `:rand`). Wiring on the card:
+
+```elixir
+cls = instance(:u_cls, Classifier.build(entries: 16))            # frame stream with metadata
+igmp = instance(:u_igmp, Igmp.build(groups: 16, hit_bits: 4), connect: [src_mac: ..., src_ip: ..., ...])
+connect(cls.m, igmp.s)                                           # next to UdpRx and the PTP stage
+path = instance(:u_path, TxPath.build(sources: 1, raw: 1))      # the IGMP frames join the merge
+connect(igmp.m_axis, path.r0_axis)
+```
+
+The BEAM drives `cmd_valid` / `cmd_leave` / `cmd_group` (hold `cmd_valid` until `cmd_ready`,
+`cmd_done` and `cmd_err` follow), for example from CSRs for `GROUP` and `CMD`. A top level with exactly
+this wiring is `ExNet.NetTops.igmp_top/1`; `test/rtl/igmp_card_test.exs` runs it from XGMII to XGMII.
 
 ## The hardware library set
 
@@ -236,6 +258,7 @@ mix test --only interop
 |---|---|---|
 | `test/interop/tshark_test.exs` | tshark `-T json`: Ethernet, 802.1Q and 802.1ad, IPv4 with options, DSCP/ECN/DF/TTL/ID, UDP, ARP, IGMP v1/v2/v3 queries, reports and leave | no malformed or expert warnings, IPv4/UDP/IGMP checksums good, every field equal; a corrupted UDP payload is reported as bad checksum (negative control) |
 | `test/interop/kernel_traffic_test.exs` | Linux kernel on a veth pair (`containers/nettools`, tcpdump): ARP requests plain, 802.1Q (vid 20) and 802.1ad (vid 30), UDP multicast with TTL 4, IGMPv3 join and leave | every frame decodes; UDP and IPv4 checksums verify; the IGMPv3 records are `change_to_exclude` and `change_to_include` for the joined group |
+| `test/interop/igmp_rtl_test.exs` | frames sent by `RTL.Igmp` (BEAM simulation): v3 joins, general query answer with three records, leave, v2 report and leave, 802.1Q tagged report | no malformed or expert warnings, IPv4 and IGMP checksums good, TTL 1, DSCP 48, Router Alert, multicast MACs, group addresses and record types equal the scenario |
 | `test/interop/captures_test.exs` | Wireshark sample captures `IGMP-dataset.pcap` (147 frames), `vlan.cap.gz` (395), `arp-storm.pcap` (622), frame by frame against tshark | all frames agree on MACs, tags, ethertype, IPv4, UDP, ARP and IGMP fields; 39 LLC frames are reported as such by `Ethernet.decode/1` |
 
 Notes:
