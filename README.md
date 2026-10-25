@@ -85,7 +85,7 @@ unless noted. The moduledocs list every port.
 
 | Module (`build/1` or function) | Interface | Behaviour |
 |---|---|---|
-| `RTL.CRC32.build(1 \| 8)` | `data`, `keep`, `valid`, `init` in; `state`, `crc`, `ok` out | one word per cycle, partial last word by `keep`, XOR network from `ExNet.CRC32.matrices/1` |
+| `RTL.CRC32.build(1 \| 8)` | `data`, `keep`, `valid`, `init` in; `state`, `crc`, `ok` out | one word per cycle, partial last word by `keep`, XOR network from `ExHdlCores.CRC` |
 | `RTL.MacTx.build(8)` | AXI4-Stream in (`tdata/tlast/tuser/tvalid/tready`), `gmii_txd/en/er`, `tx_sof`, `tx_tag` | preamble, pad to 60, FCS, 12 cycle gap; `tvalid` must not drop in a frame; `tuser` = PTP tag |
 | `RTL.MacTx.build(64)` | AXI4-Stream in with `tkeep`, `tuser` (tag), `xgmii_txd/txc`, `tx_sof`, `tx_tag` | Start word, one word per beat, FCS behind the last byte, gap of at least 12 bytes with `/T/` counted (1 or 2 idle words); min frame 11 words |
 | `RTL.MacRx.build(8)` | `gmii_rxd/dv/er` in; AXI4-Stream out (`tuser` 4 bit: bit 0 bad, 3:1 status), `rx_sof`, `frame_end`, `status` | FCS stripped and checked, runt (< 64 with FCS), oversize (`max_len` 1522), `tlast` on the real last byte; beat in cycle `t + 2` |

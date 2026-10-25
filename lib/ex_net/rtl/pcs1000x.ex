@@ -94,6 +94,7 @@ defmodule ExNet.RTL.PCS1000X do
   """
   use ExHdl.RTL
 
+  alias ExHdlCores.CommaAligner
   alias ExNet.PCS.Base1000X.Sync
   alias ExNet.RTL.AutoNeg, as: AN
   alias ExNet.RTL.Code8b10b, as: C8
@@ -386,34 +387,14 @@ defmodule ExNet.RTL.PCS1000X do
     module "pcs1000x_rx" do
       rx_code10 = input(:rx_code10, 10)
       shift_o = output(:shift, 4)
-      p1 = reg(:p1, 10, reset: 0)
-      p2 = reg(:p2, 10, reset: 0)
-      shift = reg(:shift_r, 4, reset: 0)
-      algn = reg(:algn, 10, reset: 0)
 
-      core = rx_core(algn)
+      al = instance(:u_align, CommaAligner.build())
+      core = rx_core(al.aligned)
       rx_ports(core)
-      sync_out = signal(:sync)
 
-      w = wire(:win, cat([p1, rx_code10]))
-
-      cand =
-        Enum.reduce(9..0//-1, shift, fn k, acc ->
-          pat = slice(w, 13 - k, 7)
-          mux(pat == 0b0011111 or pat == 0b1100000, const(k, 4), acc)
-        end)
-
-      ext = wire(:ext, cat([p2, p1]))
-      picks = for s <- 0..9, do: slice(ext, 10 - s, 10)
-
-      sync do
-        p1 <~ rx_code10
-        p2 <~ p1
-        algn <~ mux(shift, picks)
-        if not sync_out, do: shift <~ cand
-      end
-
-      shift_o <~ shift
+      al.code <~ rx_code10
+      al.lock <~ signal(:sync)
+      shift_o <~ al.shift
     end
   end
 

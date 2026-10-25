@@ -94,14 +94,22 @@ and Verilator, slices/concat/`cat` cover the CRC and ROM needs. Nothing here blo
     about 3 s per random scenario of a few hundred cycles in `Sim`, a minute for its test
     file; Verilator runs the same stimulus in well under a second. A cheaper evaluation
     schedule (or caching of constant subtrees) would help large designs.
-19. **Generic blocks written locally** (to deduplicate into ex_hdl_cores): the standalone
-    CRC-32 now comes from `ExHdlCores.CRC.build/2`; the MACs still inline
-    `ExNet.RTL.CRC32.next_keep/4` into their own state register (1580 LUT at 64 bit), wanted
-    from cores: a `CRC.next_expr(params, state, data, keep, bytes)` helper for that use, LFSR/scrambler matrices by unit
-    vectors (`ExNet.RTL.Scrambler.masks/1`), AXI4-Stream source/driver for tests
-    (`test/support/axis_source.ex`), comma aligner, header capture buffer with a fixed delay
-    line and result ring (`ExNet.RTL.Classifier`), ones' complement checksum tree over a
-    masked word window, byte-lane shifters by runtime offset.
+19. **Generic blocks written locally**: migrated to ex_hdl_cores. The MACs use
+    `ExHdlCores.CRC.next/5`, `final/2` and `init/1` inline (the register is now in Rocksoft
+    notation, so `fcs = CRC.final(:crc32, crc)` and the residue is compared bit reversed),
+    `ExNet.RTL.PCS1000X.build_rx/0` instantiates `ExHdlCores.CommaAligner`, and
+    `ExNet.RTL.Classifier` captures its header with `ExHdlCores.HeaderCapture` (`header: 96`,
+    not 90: the 96 byte window keeps the `len`/`more` semantics of the parser; a one bit
+    `at_start` register and the `hdr_valid` edge replace the index and event wires). Resource
+    deltas (Yosys LUT): mac_tx_8 163 to 168, mac_rx_8 142 to 146, mac_tx_64 2097 to 2111,
+    mac_rx_64 1855 to 1885, pcs1000x_rx 150 to 151, pcs1000x 326 to 356, rxcls_n16 4127 to
+    4200, rx_path_n16 6661 to 6822; FF unchanged within 2. Still local: `test/support/axis_source.ex`
+    (`AxisDriver` has random backpressure and frame outputs, ex_net's tests need the cycle exact
+    closed loop with gaps and aborts, and read GMII or XGMII traces rather than streams),
+    LFSR/scrambler matrices by unit vectors (`ExNet.RTL.Scrambler.masks/1`), the classifier's
+    delay line and result ring (a packet FIFO with the verdict as sideband would replace them),
+    ones' complement checksum tree and byte-lane shifters (shared already, see `Checksum`,
+    `ByteShift`). `ExNet.CRC32.matrices/1` stays: it is the reference model's `step_word/3`.
 20. **defpacket for the classifier.** Evaluated in the integration wave, not adopted. The
     parser generated from the chain `eth -> vlan{0,2} -> ipv4 (ihl) -> udp` (`defpacket :udp_rx,
     bus_width: 64`, `Wrap.protocol/2`, Yosys `synth_xilinx -flatten -family xcup`) takes

@@ -47,7 +47,7 @@ defmodule ExNet.RTL.Classifier do
 
   ## Timing
 
-  Throughput is one beat per cycle. The first 12 beats are captured into `hdr`
+  Throughput is one beat per cycle. The first 12 beats are captured into `hdr` (`ExHdlCores.HeaderCapture`)
   (the maximum header is 90 bytes); the event is the beat 11 or an earlier `tlast`.
   Cycle `e` = event beat on the input; `e + 1`: field extraction (combinational
   over `hdr`, registered); `e + 2`: table match, result pushed into a ring of
@@ -87,6 +87,7 @@ defmodule ExNet.RTL.Classifier do
   """
   use ExHdl.RTL
   import Bitwise
+  alias ExHdlCores.HeaderCapture
   alias ExNet.RTL.Ifc
   alias ExNet.{Filter, IPv4}
 
@@ -134,35 +135,34 @@ defmodule ExNet.RTL.Classifier do
       m_ovf = output(:ovf, 1)
 
       # -- stage A: header capture and event --------------------------------------------
-      idx = reg(:idx, 4)
-      hdr = for i <- 0..(@window - 1), do: reg(:"hdr#{i}", 64, reset: nil)
-      ev_v = reg(:ev_v, 1)
-      ev_len = reg(:ev_len, 7, reset: nil)
-      ev_more = reg(:ev_more, 1, reset: nil)
+      hc = instance(:u_hdr, HeaderCapture.build(header: 8 * @window, data: 64))
+      hc.s_axis.tvalid <~ s_valid
+      hc.s_axis.tdata <~ s_data
+      hc.s_axis.tkeep <~ s_keep
+      hc.s_axis.tlast <~ s_last
+      hc.m_axis.tready <~ 1
 
-      first = wire(:sof_in, s_valid and idx == 0)
-      event = wire(:hdr_event, s_valid and (idx == 11 or (s_last and idx < 11)))
+      hdr = for i <- 0..(@window - 1), do: slice(hc.hdr, 64 * i, 64)
 
-      cnt =
-        Enum.reduce(1..7, zext(s_keep[0], 4), fn k, acc -> add_wrap(acc, zext(s_keep[k], 4)) end)
+      # `at_start` is the `tlast` of the latest beat: the next beat starts a frame, and
+      # while the capture is complete (`hdr_valid`) it tells whether the frame went on
+      # past the captured beats
+      at_start = reg(:at_start, 1, reset: 1)
+      vd = reg(:hdr_valid_d, 1)
 
-      len_last = add_wrap(cat([idx, const(0, 3)]), zext(cnt, 7))
+      first = wire(:sof_in, s_valid and at_start)
+
+      # one pulse per frame, also for one beat frames that keep `hdr_valid` high
+      event = wire(:hdr_event, hc.hdr_valid and (hc.hdr_start or not vd))
 
       sync do
-        if s_valid do
-          for {h, i} <- Enum.with_index(hdr), do: if(idx == i, do: h <~ s_data)
-
-          idx
-          <~ mux(s_last, const(0, 4), mux(idx == @window, const(@window, 4), add_wrap(idx, 1)))
-        end
-
-        ev_v <~ event
-
-        if event do
-          ev_len <~ mux(s_last, len_last, const(96, 7))
-          ev_more <~ not s_last
-        end
+        if s_valid, do: at_start <~ s_last
+        vd <~ hc.hdr_valid
       end
+
+      ev_v = event
+      ev_len = wire(:ev_len, zext(hc.hdr_len, 7))
+      ev_more = wire(:ev_more, not at_start)
 
       # -- stage B: field extraction -----------------------------------------------------
       p = parse(hdr, ev_len, ev_more)

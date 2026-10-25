@@ -44,10 +44,10 @@ defmodule ExNet.RTL.MacTx do
   frame sends a word of `/E/` and one idle word.
   """
   use ExHdl.RTL
-  alias ExNet.RTL.CRC32, as: Crc
+  alias ExHdlCores.CRC
   alias ExNet.RTL.Ifc
 
-  @init 0xFFFFFFFF
+  @init CRC.init(:crc32)
 
   def build(width, opts \\ [])
 
@@ -77,12 +77,14 @@ defmodule ExNet.RTL.MacTx do
       fcs = wire(:p_fcs, phase == 4)
       ge59 = wire(:ge59, n >= 59)
       sfd = wire(:sfd, pre and cnt == 7)
-      nxt = wire(:crc_next, Crc.next(crc, mux(pad, 0, s.tdata), 1))
+      nxt = wire(:crc_next, CRC.next(:crc32, crc, mux(pad, 0, s.tdata), nil, 1))
+
+      fcs_crc = wire(:fcs_crc, CRC.final(:crc32, crc))
 
       fcs_byte =
         wire(
           :fcs_byte,
-          mux(cnt[0..1], [(~~~crc)[0..7], (~~~crc)[24..31], (~~~crc)[16..23], (~~~crc)[8..15]])
+          mux(cnt[0..1], [fcs_crc[0..7], fcs_crc[24..31], fcs_crc[16..23], fcs_crc[8..15]])
         )
 
       o_d = wire(:o_d, 8)
@@ -244,8 +246,8 @@ defmodule ExNet.RTL.MacTx do
       end
 
       thermo = wire(:thermo, cat(for i <- 7..0//-1, do: eff > i))
-      crc_n = wire(:crc_next, Crc.next_keep(crc, dword, thermo, 8))
-      fcs = wire(:fcs, ~~~crc_n)
+      crc_n = wire(:crc_next, CRC.next(:crc32, crc, dword, thermo, 8))
+      fcs = wire(:fcs, CRC.final(:crc32, crc_n))
 
       # final word and the tail word for each `eff`
       lane_d = fn i -> dword[(8 * i)..(8 * i + 7)] end

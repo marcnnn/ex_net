@@ -1,10 +1,8 @@
 defmodule ExNet.RTL.CRC32 do
   @moduledoc """
-  Ethernet FCS CRC-32 in hardware, generated from `ExNet.CRC32.matrices/1`.
-
-  `next/3` and `next_keep/4` return the next-state expression (usable inside
-  other modules, the MACs inline them); `build/1` is the standalone module,
-  built by `ExHdlCores.CRC`.
+  Ethernet FCS CRC-32 in hardware: the standalone module, built by
+  `ExHdlCores.CRC`. The MACs keep the register themselves and use
+  `ExHdlCores.CRC.next/5` and `final/2` inline.
 
   Standalone module `crc32_<8*bytes>`:
 
@@ -22,40 +20,6 @@ defmodule ExNet.RTL.CRC32 do
     * `valid = 0, init = 1` clears the register; `keep = 0` with `valid` is
       treated as one byte
   """
-  use ExHdl.RTL
-
-  @init 0xFFFFFFFF
-
-  @doc "Next register value after a full word of `bytes` bytes."
-  def next(state, data, bytes) do
-    %{state: sm, data: dm} = ExNet.CRC32.matrices(bytes)
-    dmask = Bitwise.bsl(1, 8 * bytes) - 1
-
-    rtl do
-      bits =
-        for j <- 31..0//-1 do
-          bxor(
-            reduce_xor(state &&& Enum.at(sm, j)),
-            reduce_xor(data &&& band(Enum.at(dm, j), dmask))
-          )
-        end
-
-      cat(bits)
-    end
-  end
-
-  @doc """
-  Next register value for a word of up to `bytes` bytes; `keep` selects how many
-  (contiguous from lane 0, at least one).
-  """
-  def next_keep(state, data, keep, bytes) do
-    rtl do
-      Enum.reduce(1..bytes//1, nil, fn k, acc ->
-        n = next(state, data, k)
-        if is_nil(acc), do: n, else: mux(keep[k - 1], n, acc)
-      end)
-    end
-  end
 
   @doc """
   Standalone CRC module for `bytes` bytes per cycle (1 for GMII, 8 for XGMII),
@@ -73,7 +37,4 @@ defmodule ExNet.RTL.CRC32 do
     opts = if bytes > 1, do: Keyword.put(opts, :zero_keep, :one_byte), else: opts
     ExHdlCores.CRC.build(:crc32, opts)
   end
-
-  @doc false
-  def init_value, do: @init
 end

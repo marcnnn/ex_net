@@ -44,11 +44,11 @@ defmodule ExNet.RTL.MacRx do
   one beat per cycle. Needs `max_len >= 64`.
   """
   use ExHdl.RTL
-  alias ExNet.RTL.CRC32, as: Crc
+  alias ExHdlCores.CRC
   alias ExNet.RTL.Ifc
 
-  @init 0xFFFFFFFF
-  @residue 0xDEBB20E3
+  @init CRC.init(:crc32)
+  @residue CRC.reflect(CRC.residue(:crc32), 32)
 
   def build(width, opts \\ [])
 
@@ -83,7 +83,7 @@ defmodule ExNet.RTL.MacRx do
       frame = wire(:p_frame, phase == 3)
       is55 = wire(:is55, rxd == 0x55)
       isd5 = wire(:isd5, rxd == 0xD5)
-      crc_n = wire(:crc_next, Crc.next(crc, rxd, 1))
+      crc_n = wire(:crc_next, CRC.next(:crc32, crc, rxd, nil, 1))
       in_dv = wire(:in_frame_dv, frame and dv)
 
       ev_d = wire(:ev_data, in_dv and cnt >= 4 and cnt < max_len)
@@ -234,7 +234,7 @@ defmodule ExNet.RTL.MacRx do
       term = wire(:term, rxc != 0)
       keepv = wire(:keepv, cat(for i <- 7..0//-1, do: first > i))
       bm = wire(:bm, cat(for i <- 7..0//-1, do: rep(first > i, 8)))
-      crc_n = wire(:crc_next, mux(first == 0, crc, Crc.next_keep(crc, rxd &&& bm, keepv, 8)))
+      crc_n = wire(:crc_next, mux(first == 0, crc, CRC.next(:crc32, crc, rxd &&& bm, keepv, 8)))
       sum = wire(:cnt_sum, cnt + first)
       cnt_n = wire(:cnt_n, mux(sum >= max_len + 1, const(max_len + 1, cw), trunc(sum, cw)))
       err_n = wire(:err_n, err or (term and not tflag))
