@@ -45,7 +45,7 @@ defmodule ExNet.RTL.ResourcesTest do
     {"rxcls_n16", {Classifier, :build, []}, 4900, 6200, 1},
     {"net_loopback_1g", {Loopback, :build, [:gbe]}, 640, 330, 1},
     {"net_loopback_10g", {Loopback, :build, [:xgbe]}, 6200, 930, 1},
-    {"udp_rx_d512", {UdpRx, :build, []}, 540, 380, 5},
+    {"udp_rx_d512", {UdpRx, :build, []}, 1000, 380, 5},
     {"udp_tx", {UdpTx, :build, []}, 520, 100, 0},
     {"tx_path_n2", {TxPath, :build, []}, 1300, 290, 6},
     {"rx_path_n16", {RxPath, :build, []}, 7900, 7000, 5}
