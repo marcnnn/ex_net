@@ -270,3 +270,7 @@ Notes:
 - No ARP replies in the kernel capture (one network namespace), no IPv6 (the kernel's
   IPv6 neighbour discovery and MLD are in the capture and ignored).
 - Findings: none in `lib/`, see NEEDS.md ("Interop findings").
+
+## License
+
+Apache-2.0, see `LICENSE`.
