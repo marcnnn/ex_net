@@ -1,0 +1,10 @@
+# Elixir 1.18 / OTP 27 from Debian trixie, iproute2 and ping, to run the ExNet.Tap tests against a
+# real TAP interface (rootless: --cap-add NET_ADMIN --device /dev/net/tun, see test/interop/support/tap_container.sh).
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      elixir erlang-dev erlang-ssl erlang-inets erlang-xmerl erlang-crypto erlang-runtime-tools \
+      build-essential git ca-certificates iproute2 iputils-ping \
+ && rm -rf /var/lib/apt/lists/* \
+ && mix local.hex --force && mix local.rebar --force
+ENV MIX_ENV=test LANG=C.UTF-8
