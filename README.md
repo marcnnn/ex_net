@@ -26,6 +26,8 @@ between the MAC and those libraries (integration tests in ex_aes67, `test/integr
 | IGMP host | `ExNet.IGMP`, `IGMP.Host` | `ExNet.RTL.Igmp` | IGMPv2/v3 join and leave from a command port, query responses with random delay, own frames (Router Alert, CS6, multicast MAC), `TxPath` `raw:` source |
 | Datapaths | | `ExNet.RTL.RxPath`, `TxPath` | MAC RX, classifier, `UdpRx`; sources, `UdpTx`, packet FIFOs, merge |
 | Loopback | | `ExNet.RTL.Loopback` | MAC TX, PCS TX, PCS RX, MAC RX for 1G and 10G |
+| Host TAP | `ExNet.Tap`, `ExNet.Netif` | | TAP interface from the BEAM (NIF, `enif_select`), unprivileged interface state, tested against the kernel in a rootless container |
+| Multicast filter | `ExNet.Multicast`, `IGMP.Filter` | | 6-bit multicast hash and 64-bit `mc_hash` (`ether_crc_le >> 26`), removal of hardware-owned groups from the kernel's IGMP frames |
 | Transceivers, NIC test | | | not started |
 
 All decoders return `{:ok, struct}` or `{:error, reason}` and never raise on
@@ -212,6 +214,67 @@ connect(igmp.m_axis, path.r0_axis)
 The BEAM drives `cmd_valid` / `cmd_leave` / `cmd_group` (hold `cmd_valid` until `cmd_ready`,
 `cmd_done` and `cmd_err` follow), for example from CSRs for `GROUP` and `CMD`. A top level with exactly
 this wiring is `ExNet.NetTops.igmp_top/1`; `test/rtl/igmp_card_test.exs` runs it from XGMII to XGMII.
+
+## TAP interface
+
+`ExNet.Tap` opens an existing TAP interface (`TUNSETIFF` with `IFF_TAP | IFF_NO_PI` on `/dev/net/tun`)
+and delivers the kernel's frames, whole Ethernet frames without FCS, to the owner process as
+`{:ex_net_tap, tap, frame}`. It is the TAP side of the card's NIC bridge; the packet DMA is in
+aes67_card.
+
+```elixir
+{:ok, tap} = ExNet.Tap.open("aes0")           # owner is the caller; start_link/2 for a supervisor
+receive do {:ex_net_tap, ^tap, frame} -> ExNet.Ethernet.decode(frame) end
+:ok = ExNet.Tap.write(tap, frame)             # {:error, :eagain} when the kernel queue is full
+ExNet.Tap.close(tap)
+```
+
+A persistent TAP owned by a user (one time, as root; no root needed afterwards):
+
+```sh
+ip tuntap add dev aes0 mode tap user $USER
+ip addr add 10.0.0.1/24 dev aes0
+ip link set aes0 up
+```
+
+The NIF (`c_src/ex_net_tap_nif.c`) is built by `mix compile` with `make` and a C compiler (the same
+optional scheme as ex_pcie); without it `Tap.open/2` returns `{:error, :nif_unavailable}`. An interface
+that does not exist is `{:error, :enoent}`: the library never creates one.
+
+`ExNet.Netif` reads the interface state without privileges and without an open TAP:
+
+| Function | Source |
+|---|---|
+| `mac/1`, `mtu/1`, `up?/1`, `running?/1` | `/sys/class/net/<if>/` |
+| `ipv4_addresses/1` | `:inet.getifaddrs/0` |
+| `multicast_macs/1` | `/proc/net/dev_mcast` (link-layer multicast list) |
+| `joined_groups/1` | `/proc/net/igmp` (IPv4 groups joined by the kernel) |
+
+The two lists are what the card follows: `ExNet.Multicast.mc_hash/1` (or `mc_hash_of/1` for an
+interface) gives the 64-bit receive filter, `ExNet.IGMP.Filter.filter/2` removes the records of
+hardware-owned groups from the kernel's IGMP frames before they are sent to the wire.
+
+The multicast hash is `crc32_le(dst_mac) >> 26`, where `crc32_le` is Linux `ether_crc_le(6, mac)`
+(reflected CRC-32, register initialised to all ones, no final complement), so
+`01:00:5e:00:00:01` gives register 0xD9B4C5FE, hash 54 and `mc_hash` bit 54. The known values in
+`test/multicast_test.exs` come from `zlib.crc32(mac) ^ 0xFFFFFFFF`. Drivers that hash with the big endian
+`ether_crc` use a different table.
+
+Tests: `ExNet.Multicast`, `IGMP.Filter` and `Netif` run everywhere. `test/tap_test.exs` (tag `:tap`) needs
+a TAP with 10.0.0.1/24 that the BEAM may open and is skipped unless `EX_NET_TAP=<name>` is set. The BEAM
+answers the kernel's ARP and ICMP echo requests with the codecs (ping succeeds), and a multicast join by
+the kernel shows up in the helpers and as an IGMP frame. `test/interop/tap_container_test.exs` (tag
+`:tap_container`) runs those tests in a rootless container that creates its own `tap0`:
+
+```sh
+containers/build.sh tap                     # Debian trixie, Elixir 1.18, iproute2, ping
+mix test --only tap_container               # first run compiles in the volume ex-net-tap-build (minutes)
+EX_NET_TAP=aes0 mix test --only tap test/tap_test.exs   # on a host with a TAP set up as above (10.0.0.1/24)
+```
+
+The container runs with `--cap-add NET_ADMIN --device /dev/net/tun --network none`, and
+`--security-opt label=disable` because SELinux hosts (Fedora) deny containers access to the tun device. The
+host's `/dev/net/tun` must be accessible (mode 0666 is the default).
 
 ## The hardware library set
 

@@ -194,3 +194,17 @@ Wireshark sample captures; commands in README "Interop".
   the check with ex_net's own decoders and use tshark only for generated frames, where the
   checksums are complete.
 
+
+## TAP and multicast helpers (NIC branch)
+
+- `ExNet.Netif.ipv4_addresses/1` uses `:inet.getifaddrs/0`, the multicast lists are parsed from
+  `/proc/net/dev_mcast` and `/proc/net/igmp`. Netlink (RTM_GETADDR, RTM_GETMULTICAST) would give one
+  consistent snapshot and change notifications (to follow joins instead of polling); OTP has no
+  netlink socket, so it needs a NIF.
+- `ExNet.Tap` cannot carry hardware timestamps (a TAP has none); PTP frames have to be taken by the
+  BEAM before the TAP, as the NIC note says. No offload flags (`IFF_VNET_HDR`, GSO/checksum
+  offload) are used: the kernel sends fully checksummed frames of at most MTU + 14 bytes.
+- `ExNet.IGMP.Filter` rebuilds a changed frame from the decoded structs: IPv4 options are kept as raw
+  bytes, but a frame with an IGMP v3 record of unknown type or a bad checksum passes unchanged.
+- The container tests need `--security-opt label=disable` on SELinux hosts; a policy that allows
+  `container_t` access to `tun_tap_device_t` would remove that.
