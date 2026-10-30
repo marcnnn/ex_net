@@ -14,85 +14,43 @@ defmodule ExNet.Packets do
   use ExHdl.Protocol
 
   defpacket :eth2, bus_width: 16 do
-    header do
-      field(:dst, 48)
-      field(:src, 48)
-      field(:ethertype, 16)
-    end
-
+    header(<<dst::48, src::48, ethertype::16>>)
     payload(:data, type: :u8)
   end
 
   # 802.1Q / 802.1ad tag after the TPID: TCI, then the next EtherType
   defpacket :vlan_tag, bus_width: 32 do
-    header do
-      field(:pcp, 3)
-      field(:dei, 1)
-      field(:vid, 12)
-      field(:ethertype, 16)
-    end
-
+    header(<<pcp::3, dei::1, vid::12, ethertype::16>>)
     payload(:data, type: :u8)
   end
 
   # IPv4 header without options (IHL = 5)
   defpacket :ipv4, bus_width: 32 do
-    header do
-      field(:version, 4, assert: 4)
-      field(:ihl, 4)
-      field(:dscp, 6)
-      field(:ecn, 2)
-      field(:total_length, 16)
-      field(:id, 16)
-      field(:reserved, 1)
-      field(:df, 1)
-      field(:mf, 1)
-      field(:frag_offset, 13)
-      field(:ttl, 8)
-      field(:protocol, 8)
-      field(:checksum, 16)
-      field(:src, 32)
-      field(:dst, 32)
-    end
+    header(
+      <<version::4, ihl::4, dscp::6, ecn::2, total_length::16, id::16, reserved::1, df::1, mf::1,
+        frag_offset::13, ttl::8, protocol::8, checksum::16, src::32, dst::32>>
+      when version == 4
+    )
 
     payload(:data, type: :u8)
   end
 
   defpacket :udp, bus_width: 32 do
-    header do
-      field(:src_port, 16)
-      field(:dst_port, 16)
-      field(:length, 16)
-      field(:checksum, 16)
-    end
-
+    header(<<src_port::16, dst_port::16, length::16, checksum::16>>)
     payload(:data, type: :u8)
   end
 
   # IGMPv1/v2 message, also the first 8 bytes of a v3 query
   defpacket :igmp, bus_width: 32 do
-    header do
-      field(:type, 8)
-      field(:max_resp, 8)
-      field(:checksum, 16)
-      field(:group, 32)
-    end
-
+    header(<<type::8, max_resp::8, checksum::16, group::32>>)
     payload(:data, type: :u8)
   end
 
   defpacket :arp, bus_width: 32 do
-    header do
-      field(:htype, 16, assert: 1)
-      field(:ptype, 16, assert: 0x0800)
-      field(:hlen, 8, assert: 6)
-      field(:plen, 8, assert: 4)
-      field(:oper, 16)
-      field(:sha, 48)
-      field(:spa, 32)
-      field(:tha, 48)
-      field(:tpa, 32)
-    end
+    header(
+      <<htype::16, ptype::16, hlen::8, plen::8, oper::16, sha::48, spa::32, tha::48, tpa::32>>
+      when htype == 1 and ptype == 0x0800 and hlen == 6 and plen == 4
+    )
 
     payload(:data, type: :u8)
   end
